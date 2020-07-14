@@ -64,7 +64,7 @@ resource "azurerm_virtual_network_peering" "hub2west" {
 
 # Peering Hub to East
 resource "azurerm_virtual_network_peering" "hub2east" {
-  name                      	= var.peering_hub2east_name"
+  name                      	= var.peering_hub2east_name
   resource_group_name       	= azurerm_resource_group.spokes.name
   virtual_network_name      	= azurerm_virtual_network.vnet-east.name
   remote_virtual_network_id 	= var.hub_vnet_id
