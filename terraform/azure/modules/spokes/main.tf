@@ -1,63 +1,161 @@
-variable "vnet_name" {
-  description = "Name of Virtual Network"
-  type = string
-  default     = "vnet01"
+##########################################
+########### Resource Groups  #############
+##########################################
+
+# Spoke RG
+resource "azurerm_resource_group" "spokes" {
+  name     = var.resource_group_name
+  location = var.location
 }
 
-variable "resource_group_name" {
-  description = "Azure Resource Group name to build into"
-  type = string
+##########################################
+########## Virtual Networks  #############
+##########################################
+
+# West vNet
+resource "azurerm_virtual_network" "vnet-west" {
+  name                = var.west_spoke_name
+  address_space       = var.west_spoke_cidr
+  location            = var.location
+  resource_group_name = var.resource_group_name
 }
 
-variable "location" {
-  description = "The location/region where the core network will be created. The full list of Azure regions can be found at https://azure.microsoft.com/regions"
-  type = string
+# East vNet
+resource "azurerm_virtual_network" "vnet-east" {
+  name                = var.east_spoke_name
+  address_space       = var.east_spoke_cidr
+  location            = var.location
+  resource_group_name = var.resource_group_name
 }
 
-variable "address_space" {
-  description = "The address prefixes of the virtual network"
-  type = string
-  default     = "10.0.0.0/16"
+##########################################
+############# vNet Peering  ##############
+##########################################
+
+# Peering West to Hub
+resource "azurerm_virtual_network_peering" "west2hub" {
+  name                      	= var.peering_west2hub_name
+  resource_group_name       	= azurerm_resource_group.spokes.name
+  virtual_network_name      	= azurerm_virtual_network.vnet-west.name
+  remote_virtual_network_id 	= var.hub_vnet_id
+  allow_virtual_network_access	= true
+  allow_forwarded_traffic   	= true
 }
 
-variable "dns_servers" {
-  description = " DNS servers to be used with a Virtual Network. If no values specified, this defaults to Azure DNS"
-  type = list(string)
-  default = []
+# Peering East to Hub
+resource "azurerm_virtual_network_peering" "east2hub" {
+  name                      	= var.peering_east2hub_name
+  resource_group_name       	= azurerm_resource_group.spokes.name
+  virtual_network_name      	= azurerm_virtual_network.vnet-east.name
+  remote_virtual_network_id 	= var.hub_vnet_id
+  allow_virtual_network_access	= true
+  allow_forwarded_traffic   	= true
 }
 
-variable "subnet_prefixes" {
-  description = "The address prefixes to be used for subnets"
-  type = list(string)
-  default     = ["10.0.0.0/24","10.0.1.0/24"]
+# Peering Hub to West
+resource "azurerm_virtual_network_peering" "hub2west" {
+  name                      	= var.peering_hub2west_name
+  resource_group_name       	= azurerm_resource_group.spokes.name
+  virtual_network_name      	= azurerm_virtual_network.vnet-west.name
+  remote_virtual_network_id		= var.hub_vnet_id
+  allow_virtual_network_access	= true
+  allow_forwarded_traffic   	= true
 }
 
-variable "subnet_names" {
-  description = "A list of subnets's names in a Virtual Network"
-  type = list(string)
-  default = ["Frontend","Backend"]
+# Peering Hub to East
+resource "azurerm_virtual_network_peering" "hub2east" {
+  name                      	= var.peering_hub2east_name"
+  resource_group_name       	= azurerm_resource_group.spokes.name
+  virtual_network_name      	= azurerm_virtual_network.vnet-east.name
+  remote_virtual_network_id 	= var.hub_vnet_id
+  allow_virtual_network_access	= true
+  allow_forwarded_traffic   	= true
 }
 
-variable "tags" {
-  description = "Tags to be associated with Virual Network and subnets"
-  type = map(string)
-  default = {}
-}
-variable "nsg_id" {
-  description = "Network security group to be associated with a Virual Network and subnets"
-  type = string
+##########################################
+####### Subnets and Route tables #########
+##########################################
+
+# Subnet in West
+resource "azurerm_subnet" "subnet-west" {
+  name                 = var.subnet_west
+  resource_group_name  = azurerm_resource_group.spokes.name
+  virtual_network_name = azurerm_virtual_network.vnet-west.name
+  address_prefix       = "${cidrsubnet(var.west_cidr, 8, 2)}"
 }
 
-variable "allocation_method" {
-  description = "IP address allocation method"
-  type = string
-  default = "Static"
+# Subnet in East
+resource "azurerm_subnet" "subnet-east" {
+  name                 = var.subnet_east
+  resource_group_name  = azurerm_resource_group.spokes.name
+  virtual_network_name = azurerm_virtual_network.vnet-east.name
+  address_prefix       = "${cidrsubnet(var.east_cidr, 8, 2)}"
 }
 
-locals { // locals for 'allocation_method' allowed values
-  allocation_method_allowed_values = [
-    "Static"
-  ]
-  // will fail if [var.allocation_method] is invalid:
-  validate_method_allowed_value = index(local.allocation_method_allowed_values, var.allocation_method)
+# Route table for subnet in West
+resource "azurerm_route_table" "rt1" {
+  name							= "rtWest"
+  location						= var.location
+  resource_group_name			= azurerm_resource_group.spokes.name
+  disable_bgp_route_propagation	= true
+
+  route {
+    name						= "to-Internet"
+    address_prefix				= "0.0.0.0/0"
+    next_hop_type				= "VirtualAppliance"
+    next_hop_in_ip_address		= "${cidrhost(azurerm_subnet.sub4.address_prefix, 4)}"
+  }
+  route {
+    name						= "to-internal-current-vnet"
+    address_prefix				= "${element(azurerm_virtual_network.vn1.address_space, 0)}"
+    next_hop_type				= "VirtualAppliance"
+    next_hop_in_ip_address		= "${cidrhost(azurerm_subnet.sub4.address_prefix, 4)}"
+  }
+  route {
+    name						= "to-internal-other-vnet"
+    address_prefix				= "${element(azurerm_virtual_network.vnet-west.address_space, 0)}"
+    next_hop_type				= "VirtualAppliance"
+    next_hop_in_ip_address		= "${cidrhost(azurerm_subnet.sub4.address_prefix, 4)}"
+  }
+  route {
+    name						= "to-internal-current-subnet"
+    address_prefix				= "${azurerm_subnet.sub1.address_prefix}"
+    next_hop_type				= "vnetlocal"
+  }
+}
+
+resource "azurerm_subnet_route_table_association" "rt1sub" {
+  subnet_id      = "${azurerm_subnet.sub1.id}"
+  route_table_id = "${azurerm_route_table.rt1.id}"
+}
+
+# Route table for subnet in West
+resource "azurerm_route_table" "rt2" {
+  name							= "rtEast"
+  location						= var.location
+  resource_group_name			= azurerm_resource_group.spokes.name
+  disable_bgp_route_propagation	= false
+
+  route {
+    name						= "to-internal-current-vnet"
+    address_prefix				= "${element(azurerm_virtual_network.vnet-west.address_space, 0)}"
+    next_hop_type				= "VirtualAppliance"
+    next_hop_in_ip_address		= "${cidrhost(azurerm_subnet.sub4.address_prefix, 4)}"
+  }
+  route {
+    name						= "to-internal-other-vnet"
+    address_prefix				= "${element(azurerm_virtual_network.vn1.address_space, 0)}"
+    next_hop_type				= "VirtualAppliance"
+    next_hop_in_ip_address		= "${cidrhost(azurerm_subnet.sub4.address_prefix, 4)}"
+  }
+  route {
+    name						= "to-internal-current-subnet"
+    address_prefix				= "${azurerm_subnet.sub2.address_prefix}"
+    next_hop_type				= "vnetlocal"
+  }
+}
+
+resource "azurerm_subnet_route_table_association" "rt2sub" {
+  subnet_id      = "${azurerm_subnet.sub2.id}"
+  route_table_id = "${azurerm_route_table.rt2.id}"
 }
