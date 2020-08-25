@@ -11,6 +11,13 @@ provider "random" {
   version = "= 2.2.1"
 }
 
+resource "random_string" "fqdn" {
+ length  = 10
+ special = false
+ upper   = false
+ number  = false
+}
+
 //********************** Basic Configuration **************************//
 module "common" {
   source = "../modules/common"
